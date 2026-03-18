@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, createContext, useContext, useCallback } from "react";
 
-const BASE = "/api";
+const BASE = "https://alms-pro-backend.onrender.com/api";
 const req = async (method, path, body, token) => {
   const r = await fetch(`${BASE}${path}`, {
     method,
