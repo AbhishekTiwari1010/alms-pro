@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, createContext, useContext, useCallback } from "react";
 
-const BASE = "https://alms-pro.onrender.com/api";
+const BASE = "/api";
 const req = async (method, path, body, token) => {
   const r = await fetch(`${BASE}${path}`, {
     method,
@@ -115,12 +115,12 @@ select.input option{background:var(--bg3)}
 /* ── LIFT SHAFT — LIVE ── */
 .shafts-section{background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:20px;margin-bottom:20px}
 .shafts-title{font-family:var(--font-d);font-size:20px;letter-spacing:2px;color:var(--text);margin-bottom:16px;display:flex;align-items:center;justify-content:space-between}
-.shafts-wrap{display:grid;grid-template-columns:repeat(6,1fr);gap:6px}
+.shafts-wrap{display:grid;grid-template-columns:repeat(6,1fr);gap:10px}
 @media(max-width:900px){.shafts-wrap{grid-template-columns:repeat(3,1fr)}}
 @media(max-width:500px){.shafts-wrap{grid-template-columns:repeat(2,1fr)}}
 
 .shaft-col{display:flex;flex-direction:column;align-items:center;gap:6px}
-.shaft-outer{position:relative;width:70%;height:170px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;overflow:hidden}
+.shaft-outer{position:relative;width:100%;height:200px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;overflow:hidden}
 
 /* Color by status */
 .shaft-outer.IDLE      {border-color:var(--border)}
@@ -131,7 +131,7 @@ select.input option{background:var(--bg3)}
 
 .shaft-track{position:absolute;left:50%;top:8px;bottom:8px;width:2px;background:var(--border);transform:translateX(-50%)}
 
-.shaft-car{position:absolute;left:4px;right:4px;height:20px;border-radius:4px;transition:bottom 0.5s cubic-bezier(0.4,0,0.2,1);display:flex;align-items:center;justify-content:center;font-family:var(--font-m);font-size:11px;font-weight:500;z-index:2}
+.shaft-car{position:absolute;left:6px;right:6px;height:28px;border-radius:4px;transition:bottom 0.5s cubic-bezier(0.4,0,0.2,1);display:flex;align-items:center;justify-content:center;font-family:var(--font-m);font-size:11px;font-weight:500;z-index:2}
 .shaft-car.IDLE        {background:var(--bg4);border:1px solid var(--border2);color:var(--text3)}
 .shaft-car.BUSY        {background:var(--blue3);border:1px solid var(--blue);color:var(--blue)}
 .shaft-car.WAITING_CAR {background:rgba(245,166,35,0.15);border:1px solid var(--amber);color:var(--amber);animation:pulse-wait 1s ease-in-out infinite}
@@ -273,7 +273,7 @@ const Alert = ({ type, msg }) => msg ? <div className={`alert alert-${type}`}>{m
 // ═══════════════════════════════════════════════════════════════
 function LiftShaft({ lift, maxFloor = 60 }) {
   const phase = lift.phase || (lift.liftStatus === "IDLE" ? "IDLE" : "BUSY");
-  const pct   = ((lift.currentFloor - 1) / Math.max(1, maxFloor - 1)) * (140 - 36 - 16);
+  const pct   = ((lift.currentFloor - 1) / Math.max(1, maxFloor - 1)) * (200 - 36 - 16);
   const bottomPx = 8 + pct;
 
   const carClass = phase === "WAITING"   ? "WAITING_CAR"
@@ -505,6 +505,17 @@ function UserDashboard({ page }) {
 
   return (
     <div className="page">
+      {/* Live Shaft Visualization */}
+      <div className="shafts-section mb-20">
+        <div className="shafts-title">
+          <span>LIVE LIFT POSITIONS</span>
+          <span className="pill pill-blue pulse">LIVE</span>
+        </div>
+        <div className="shafts-wrap">
+          {lifts.map(l => <LiftShaft key={l.liftNumber} lift={l} />)}
+        </div>
+      </div>
+
       {/* Request Panel */}
       <div className="g2">
         <div className="card">
@@ -570,19 +581,28 @@ function UserDashboard({ page }) {
             </div>
           )}
         </div>
-      </div>
-      
-      {/* Live Shaft Visualization */}
-      <div className="shafts-section mb-20">
-        <div className="shafts-title">
-          <span>LIVE LIFT POSITIONS</span>
-          <span className="pill pill-blue pulse">LIVE</span>
-        </div>
-        <div className="shafts-wrap">
-          {lifts.map(l => <LiftShaft key={l.liftNumber} lift={l} />)}
-        </div>
-      </div>
 
+        {/* How it works */}
+        <div className="card">
+          <div className="card-title">HOW IT WORKS</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+            {[
+              { icon: "📡", phase: "WAITING", color: "var(--amber)", title: "15s Window", desc: "After your request, the lift waits 15 seconds collecting other requests for the same block. Each new request resets the timer." },
+              { icon: "🚀", phase: "TRAVELING", color: "var(--blue)", title: "Auto Departs", desc: "Once the window closes or the lift fills to capacity, it departs automatically. 3 seconds per floor travel speed." },
+              { icon: "🚪", phase: "HALTING", color: "var(--green)", title: "Smart Stops", desc: "At each floor, doors open for [2×(requests) + 3] seconds then close automatically." },
+              { icon: "✅", phase: "IDLE", color: "var(--text2)", title: "Auto Complete", desc: "Trips are marked complete automatically when the lift reaches each destination. No manual action needed." },
+            ].map(s => (
+              <div key={s.phase} style={{ display: "flex", gap: "12px", alignItems: "flex-start" }}>
+                <div style={{ fontSize: "20px", flexShrink: 0 }}>{s.icon}</div>
+                <div>
+                  <div style={{ fontFamily: "var(--font-d)", fontSize: "16px", color: s.color, letterSpacing: "1px" }}>{s.title}</div>
+                  <div style={{ fontSize: "12px", color: "var(--text2)", lineHeight: "1.6", marginTop: "3px" }}>{s.desc}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
 
       {showModal && (
         <CreateRouteModal token={user.token} onClose={() => setShowModal(false)} onCreated={r => setRoutes(p => [...p, r])} />
