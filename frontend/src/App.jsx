@@ -505,17 +505,6 @@ function UserDashboard({ page }) {
 
   return (
     <div className="page">
-      {/* Live Shaft Visualization */}
-      <div className="shafts-section mb-20">
-        <div className="shafts-title">
-          <span>LIVE LIFT POSITIONS</span>
-          <span className="pill pill-blue pulse">LIVE</span>
-        </div>
-        <div className="shafts-wrap">
-          {lifts.map(l => <LiftShaft key={l.liftNumber} lift={l} />)}
-        </div>
-      </div>
-
       {/* Request Panel */}
       <div className="g2">
         <div className="card">
@@ -581,32 +570,21 @@ function UserDashboard({ page }) {
             </div>
           )}
         </div>
-
-        {/* How it works */}
-        <div className="card">
-          <div className="card-title">HOW IT WORKS</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
-            {[
-              { icon: "📡", phase: "WAITING", color: "var(--amber)", title: "15s Window", desc: "After your request, the lift waits 15 seconds collecting other requests for the same block. Each new request resets the timer." },
-              { icon: "🚀", phase: "TRAVELING", color: "var(--blue)", title: "Auto Departs", desc: "Once the window closes or the lift fills to capacity, it departs automatically. 3 seconds per floor travel speed." },
-              { icon: "🚪", phase: "HALTING", color: "var(--green)", title: "Smart Stops", desc: "At each floor, doors open for [2×(requests) + 3] seconds then close automatically." },
-              { icon: "✅", phase: "IDLE", color: "var(--text2)", title: "Auto Complete", desc: "Trips are marked complete automatically when the lift reaches each destination. No manual action needed." },
-            ].map(s => (
-              <div key={s.phase} style={{ display: "flex", gap: "12px", alignItems: "flex-start" }}>
-                <div style={{ fontSize: "20px", flexShrink: 0 }}>{s.icon}</div>
-                <div>
-                  <div style={{ fontFamily: "var(--font-d)", fontSize: "16px", color: s.color, letterSpacing: "1px" }}>{s.title}</div>
-                  <div style={{ fontSize: "12px", color: "var(--text2)", lineHeight: "1.6", marginTop: "3px" }}>{s.desc}</div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
       </div>
 
       {showModal && (
         <CreateRouteModal token={user.token} onClose={() => setShowModal(false)} onCreated={r => setRoutes(p => [...p, r])} />
       )}
+      {/* Live Shaft Visualization */}
+      <div className="shafts-section mb-20">
+        <div className="shafts-title">
+          <span>LIVE LIFT POSITIONS</span>
+          <span className="pill pill-blue pulse">LIVE</span>
+        </div>
+        <div className="shafts-wrap">
+          {lifts.map(l => <LiftShaft key={l.liftNumber} lift={l} />)}
+        </div>
+      </div>
     </div>
   );
 }
