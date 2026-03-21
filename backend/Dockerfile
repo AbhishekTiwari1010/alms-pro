@@ -8,4 +8,4 @@ FROM eclipse-temurin:17-jre
 WORKDIR /app
 COPY --from=build /app/target/alms-pro-2.0.0.jar app.jar
 EXPOSE 8080
-ENTRYPOINT ENTRYPOINT ["java", "-Xmx450m", "-Xms200m", "-XX:+UseSerialGC", "-XX:MaxMetaspaceSize=128m", "-jar", "app.jar"]
+CMD ["java", "-Xmx450m", "-Xms200m", "-XX:+UseSerialGC", "-XX:MaxMetaspaceSize=128m", "-jar", "app.jar"]
