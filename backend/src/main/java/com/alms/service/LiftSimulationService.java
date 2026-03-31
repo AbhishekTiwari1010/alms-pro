@@ -204,26 +204,67 @@ public class LiftSimulationService {
     }
 
     private void startServing(Lift lift, LiftRuntime rt) {
-        Set<Integer> stopSet = new TreeSet<>();
-        for (LiftTrip t : rt.pendingTrips) {
-            if (t.getFromFloor() != lift.getCurrentFloor()) stopSet.add(t.getFromFloor());
-            if (t.getToFloor()   != lift.getCurrentFloor()) stopSet.add(t.getToFloor());
-        }
-
+        // Board passengers already at current floor first
         boardTripsAtFloor(lift, rt, lift.getCurrentFloor());
 
-        long above = stopSet.stream().filter(f -> f > lift.getCurrentFloor()).count();
-        long below = stopSet.stream().filter(f -> f < lift.getCurrentFloor()).count();
+        int liftFloor = lift.getCurrentFloor();
 
+        // Collect pickup floors (unboarded trips) and destination floors
+        Set<Integer> pickupFloors = new TreeSet<>();
+        Set<Integer> destFloors   = new TreeSet<>();
+        for (LiftTrip t : rt.pendingTrips) {
+            if (t.getTripStatus() == LiftTrip.TripStatus.ASSIGNED) {
+                if (t.getFromFloor() != liftFloor) pickupFloors.add(t.getFromFloor());
+            }
+            if (t.getToFloor() != liftFloor) destFloors.add(t.getToFloor());
+        }
+
+        // KEY FIX: Direction is determined by NEAREST PICKUP floor only
+        // Example: lift at 23, pickup at 1 → go DOWN first
+        // Example: lift at 5,  pickup at 10 → go UP first
+        // Destinations are added AFTER all pickups in their natural order
         rt.stops = new LinkedHashSet<>();
-        if (above >= below) {
-            rt.direction = Direction.UP;
-            stopSet.stream().filter(f -> f > lift.getCurrentFloor()).sorted().forEach(rt.stops::add);
-            stopSet.stream().filter(f -> f < lift.getCurrentFloor()).sorted(Comparator.reverseOrder()).forEach(rt.stops::add);
+
+        if (!pickupFloors.isEmpty()) {
+            // Find nearest pickup floor
+            int nearestPickup = pickupFloors.stream()
+                    .min(Comparator.comparingInt(f -> Math.abs(f - liftFloor)))
+                    .orElse(liftFloor);
+
+            if (nearestPickup < liftFloor) {
+                // Go DOWN first to reach nearest pickup
+                rt.direction = Direction.DOWN;
+                // Descend to lowest pickup floor
+                new TreeSet<>(pickupFloors).descendingSet().stream()
+                        .filter(f -> f < liftFloor).forEach(rt.stops::add);
+                // Then ascend through destinations and any pickups above
+                pickupFloors.stream().filter(f -> f > liftFloor).sorted().forEach(rt.stops::add);
+                destFloors.stream().sorted().filter(f -> !rt.stops.contains(f)).forEach(rt.stops::add);
+            } else {
+                // Go UP first to reach nearest pickup
+                rt.direction = Direction.UP;
+                // Ascend to highest pickup floor
+                pickupFloors.stream().filter(f -> f > liftFloor).sorted().forEach(rt.stops::add);
+                // Then descend through destinations and any pickups below
+                new TreeSet<>(pickupFloors).descendingSet().stream()
+                        .filter(f -> f < liftFloor).forEach(rt.stops::add);
+                new TreeSet<>(destFloors).descendingSet().stream()
+                        .filter(f -> !rt.stops.contains(f)).forEach(rt.stops::add);
+            }
         } else {
-            rt.direction = Direction.DOWN;
-            stopSet.stream().filter(f -> f < lift.getCurrentFloor()).sorted(Comparator.reverseOrder()).forEach(rt.stops::add);
-            stopSet.stream().filter(f -> f > lift.getCurrentFloor()).sorted().forEach(rt.stops::add);
+            // No pickups — all passengers already on board, just go to destinations
+            if (!destFloors.isEmpty()) {
+                int nearestDest = destFloors.stream()
+                        .min(Comparator.comparingInt(f -> Math.abs(f - liftFloor)))
+                        .orElse(liftFloor);
+                if (nearestDest < liftFloor) {
+                    rt.direction = Direction.DOWN;
+                    new TreeSet<>(destFloors).descendingSet().forEach(rt.stops::add);
+                } else {
+                    rt.direction = Direction.UP;
+                    destFloors.forEach(rt.stops::add);
+                }
+            }
         }
 
         for (LiftTrip t : rt.pendingTrips) {
