@@ -28,23 +28,18 @@ public class LiftSimulationService {
     private static final int  WAIT_SECONDS        = 15;
     private static final int  SECONDS_PER_FLOOR   = 3;
 
-    // ── Tick every 500ms ──────────────────────────────────────
     @Scheduled(fixedDelay = 500)
     @Transactional
     public void tick() {
         List<Lift> lifts = liftRepo.findByBuildingIdOrderByLiftNumber(DEFAULT_BUILDING_ID);
         for (Lift lift : lifts) {
-            // BUG FIX 1: Skip lifts under MAINTENANCE/OFFLINE — don't simulate them
             if (lift.getLiftStatus() == Lift.LiftStatus.MAINTENANCE ||
-                lift.getLiftStatus() == Lift.LiftStatus.OFFLINE) {
-                // Clear runtime if it exists so it doesn't hold stale state
+                    lift.getLiftStatus() == Lift.LiftStatus.OFFLINE) {
                 runtimes.remove(lift.getId());
                 continue;
             }
-
             LiftRuntime rt = runtimes.computeIfAbsent(lift.getId(), id -> {
                 LiftRuntime r = new LiftRuntime();
-                // BUG FIX 2: Initialize from actual DB floor, not hardcoded 1
                 r.previousFloor = lift.getCurrentFloor();
                 r.targetFloor   = lift.getCurrentFloor();
                 return r;
@@ -57,11 +52,8 @@ public class LiftSimulationService {
         switch (rt.phase) {
 
             case IDLE -> {
-                // BUG FIX 3: Only pick ASSIGNED trips — not IN_PROGRESS or COMPLETED ones
-                // that may linger from previous trips
                 List<LiftTrip> pending = tripRepo.findByLiftNumberAndTripStatus(
                         lift.getLiftNumber(), LiftTrip.TripStatus.ASSIGNED);
-
                 if (!pending.isEmpty()) {
                     rt.phase = Phase.WAITING;
                     rt.waitDeadline = System.currentTimeMillis() + (WAIT_SECONDS * 1000L);
@@ -70,74 +62,54 @@ public class LiftSimulationService {
                     rt.previousFloor = lift.getCurrentFloor();
                     lift.setLiftStatus(Lift.LiftStatus.BUSY);
                     liftRepo.save(lift);
-                    log.info("[LIFT-{}] IDLE→WAITING at {}F, trips={}",
-                            lift.getLiftNumber(), lift.getCurrentFloor(), pending.size());
+                    log.info("[LIFT-{}] IDLE→WAITING at {}F trips={}", lift.getLiftNumber(), lift.getCurrentFloor(), pending.size());
                 }
             }
 
             case WAITING -> {
-                // BUG FIX 4: During WAITING, also check if lift was set to MAINTENANCE
-                // by admin — if so, abort waiting and go back to IDLE
                 if (lift.getLiftStatus() == Lift.LiftStatus.MAINTENANCE) {
-                    rt.phase = Phase.IDLE;
-                    rt.pendingTrips.clear();
-                    rt.stops.clear();
-                    return;
+                    rt.phase = Phase.IDLE; rt.pendingTrips.clear(); rt.stops.clear(); return;
                 }
-
-                // Collect new ASSIGNED trips for this lift during the window
                 List<LiftTrip> newTrips = tripRepo.findByLiftNumberAndTripStatus(
                         lift.getLiftNumber(), LiftTrip.TripStatus.ASSIGNED);
-
                 for (LiftTrip t : newTrips) {
                     boolean exists = rt.pendingTrips.stream().anyMatch(p -> p.getId().equals(t.getId()));
                     if (!exists) {
                         rt.pendingTrips.add(t);
-                        // Extend window on each new request
-                        rt.waitDeadline = Math.max(rt.waitDeadline,
-                                System.currentTimeMillis() + (WAIT_SECONDS * 1000L));
-                        log.info("[LIFT-{}] New request in window, extended. trips={}",
-                                lift.getLiftNumber(), rt.pendingTrips.size());
+                        rt.waitDeadline = Math.max(rt.waitDeadline, System.currentTimeMillis() + (WAIT_SECONDS * 1000L));
+                        log.info("[LIFT-{}] New in window trips={}", lift.getLiftNumber(), rt.pendingTrips.size());
                     }
                 }
-
                 boolean full    = rt.pendingTrips.size() >= lift.getCapacity();
                 boolean expired = System.currentTimeMillis() >= rt.waitDeadline;
-
                 if (full || expired) {
-                    log.info("[LIFT-{}] WAITING→SERVING trips={} reason={}",
-                            lift.getLiftNumber(), rt.pendingTrips.size(), full ? "FULL" : "TIMEOUT");
+                    log.info("[LIFT-{}] WAITING→SERVING trips={} reason={}", lift.getLiftNumber(), rt.pendingTrips.size(), full ? "FULL" : "TIMEOUT");
                     startServing(lift, rt);
                 }
             }
 
             case TRAVELING -> {
-                // BUG FIX 5: If distance is 0 (lift already at target), don't divide by zero
                 long now = System.currentTimeMillis();
+                // LOOK: pick up new requests in travel direction
+                pickupEnRoute(lift, rt);
+
                 if (now >= rt.arrivalTime || rt.arrivalTime == rt.departTime) {
-                    // Arrived at stop
                     lift.setCurrentFloor(rt.targetFloor);
                     liftRepo.updateCurrentFloor(DEFAULT_BUILDING_ID, lift.getLiftNumber(), rt.targetFloor);
                     rt.previousFloor = rt.targetFloor;
 
-                    // Calculate halt time — minimum 3s even if no requests exactly here
                     int requestsHere = (int) rt.pendingTrips.stream()
-                            .filter(t -> t.getFromFloor() == rt.targetFloor
-                                      || t.getToFloor()   == rt.targetFloor)
+                            .filter(t -> t.getFromFloor() == rt.targetFloor || t.getToFloor() == rt.targetFloor)
                             .count();
                     int haltSeconds = (2 * requestsHere) + 3;
-
                     rt.phase = Phase.HALTING;
                     rt.haltDeadline = now + (haltSeconds * 1000L);
-                    log.info("[LIFT-{}] Arrived {}F, halting {}s for {} pax",
-                            lift.getLiftNumber(), rt.targetFloor, haltSeconds, requestsHere);
+                    log.info("[LIFT-{}] Arrived {}F halting {}s", lift.getLiftNumber(), rt.targetFloor, haltSeconds);
                 } else {
-                    // Smooth interpolation for live UI
                     double elapsed   = now - rt.departTime;
                     double total     = rt.arrivalTime - rt.departTime;
                     double progress  = Math.min(1.0, elapsed / total);
-                    int interpolated = (int) Math.round(
-                            rt.previousFloor + progress * (rt.targetFloor - rt.previousFloor));
+                    int interpolated = (int) Math.round(rt.previousFloor + progress * (rt.targetFloor - rt.previousFloor));
                     if (interpolated != lift.getCurrentFloor()) {
                         lift.setCurrentFloor(interpolated);
                         liftRepo.updateCurrentFloor(DEFAULT_BUILDING_ID, lift.getLiftNumber(), interpolated);
@@ -147,17 +119,15 @@ public class LiftSimulationService {
 
             case HALTING -> {
                 if (System.currentTimeMillis() >= rt.haltDeadline) {
-                    // BUG FIX 6: Complete trips before boarding to avoid double-counting
                     completeTripsAtFloor(lift, rt, rt.targetFloor);
                     boardTripsAtFloor(lift, rt, rt.targetFloor);
                     rt.stops.remove(Integer.valueOf(rt.targetFloor));
+                    // Check again for en-route pickups after halting
+                    pickupEnRoute(lift, rt);
 
                     if (rt.stops.isEmpty()) {
-                        // BUG FIX 7: Stay at last floor — don't reset to floor 1
                         int lastFloor = rt.targetFloor;
-                        log.info("[LIFT-{}] All stops done, IDLE at {}F",
-                                lift.getLiftNumber(), lastFloor);
-
+                        log.info("[LIFT-{}] All stops done IDLE at {}F", lift.getLiftNumber(), lastFloor);
                         lift.setLiftStatus(Lift.LiftStatus.IDLE);
                         lift.setCurrentFloor(lastFloor);
                         lift.setActiveTripCount(0);
@@ -167,13 +137,12 @@ public class LiftSimulationService {
                         lift.setLastUpdated(LocalDateTime.now());
                         liftRepo.save(lift);
                         liftRepo.updateCurrentFloor(DEFAULT_BUILDING_ID, lift.getLiftNumber(), lastFloor);
-
-                        rt.phase         = Phase.IDLE;
+                        rt.phase = Phase.IDLE;
                         rt.previousFloor = lastFloor;
                         rt.targetFloor   = lastFloor;
+                        rt.direction     = Direction.NONE;
                         rt.pendingTrips.clear();
                         rt.stops.clear();
-
                         drainQueue(lift);
                     } else {
                         moveToNextStop(lift, rt);
@@ -183,36 +152,80 @@ public class LiftSimulationService {
         }
     }
 
-    // ── Build stop list and start serving ─────────────────────
+    // ── LOOK Algorithm: pickup new trips in current direction ──
+    private void pickupEnRoute(Lift lift, LiftRuntime rt) {
+        if (rt.direction == Direction.NONE) return;
+        if (rt.pendingTrips.size() >= lift.getCapacity()) return;
+
+        List<LiftTrip> newTrips = tripRepo.findByLiftNumberAndTripStatus(
+                lift.getLiftNumber(), LiftTrip.TripStatus.ASSIGNED);
+
+        boolean added = false;
+        for (LiftTrip t : newTrips) {
+            if (rt.pendingTrips.size() >= lift.getCapacity()) break;
+            boolean alreadyTracked = rt.pendingTrips.stream().anyMatch(p -> p.getId().equals(t.getId()));
+            if (alreadyTracked) continue;
+
+            // Only pick up if boarding floor is ahead in current direction
+            boolean aheadUp   = rt.direction == Direction.UP   && t.getFromFloor() >= lift.getCurrentFloor();
+            boolean aheadDown = rt.direction == Direction.DOWN  && t.getFromFloor() <= lift.getCurrentFloor();
+
+            if (aheadUp || aheadDown) {
+                rt.pendingTrips.add(t);
+                t.setTripStatus(LiftTrip.TripStatus.IN_PROGRESS);
+                t.setAssignedAt(LocalDateTime.now());
+                tripRepo.save(t);
+
+                if (t.getFromFloor() != lift.getCurrentFloor()) rt.stops.add(t.getFromFloor());
+                if (t.getToFloor()   != lift.getCurrentFloor()) rt.stops.add(t.getToFloor());
+                added = true;
+
+                lift.setActiveTripCount(lift.getActiveTripCount() + 1);
+                lift.setCurrentLoad(lift.getCurrentLoad() + 1);
+                liftRepo.save(lift);
+                log.info("[LIFT-{}] LOOK pickup trip #{} {}F→{}F direction={}",
+                        lift.getLiftNumber(), t.getId(), t.getFromFloor(), t.getToFloor(), rt.direction);
+            }
+        }
+
+        if (added) reorderStops(lift, rt);
+    }
+
+    private void reorderStops(Lift lift, LiftRuntime rt) {
+        List<Integer> all = new ArrayList<>(rt.stops);
+        rt.stops = new LinkedHashSet<>();
+        if (rt.direction == Direction.UP) {
+            all.stream().filter(f -> f >= lift.getCurrentFloor()).sorted().forEach(rt.stops::add);
+            all.stream().filter(f -> f <  lift.getCurrentFloor()).sorted(Comparator.reverseOrder()).forEach(rt.stops::add);
+        } else {
+            all.stream().filter(f -> f <= lift.getCurrentFloor()).sorted(Comparator.reverseOrder()).forEach(rt.stops::add);
+            all.stream().filter(f -> f >  lift.getCurrentFloor()).sorted().forEach(rt.stops::add);
+        }
+    }
+
     private void startServing(Lift lift, LiftRuntime rt) {
         Set<Integer> stopSet = new TreeSet<>();
         for (LiftTrip t : rt.pendingTrips) {
-            // BUG FIX 8: Only add stops that are not the current floor
             if (t.getFromFloor() != lift.getCurrentFloor()) stopSet.add(t.getFromFloor());
             if (t.getToFloor()   != lift.getCurrentFloor()) stopSet.add(t.getToFloor());
         }
 
-        // BUG FIX 9: Handle passengers already on current floor
-        // Board them immediately before traveling
         boardTripsAtFloor(lift, rt, lift.getCurrentFloor());
 
-        // Direction optimization: serve majority direction first
-        List<Integer> above = stopSet.stream()
-                .filter(f -> f > lift.getCurrentFloor()).sorted().toList();
-        List<Integer> below = stopSet.stream()
-                .filter(f -> f < lift.getCurrentFloor())
-                .sorted(Comparator.reverseOrder()).toList();
+        long above = stopSet.stream().filter(f -> f > lift.getCurrentFloor()).count();
+        long below = stopSet.stream().filter(f -> f < lift.getCurrentFloor()).count();
 
         rt.stops = new LinkedHashSet<>();
-        if (above.size() >= below.size()) {
-            rt.stops.addAll(above);
-            rt.stops.addAll(below);
+        if (above >= below) {
+            rt.direction = Direction.UP;
+            stopSet.stream().filter(f -> f > lift.getCurrentFloor()).sorted().forEach(rt.stops::add);
+            stopSet.stream().filter(f -> f < lift.getCurrentFloor()).sorted(Comparator.reverseOrder()).forEach(rt.stops::add);
         } else {
-            rt.stops.addAll(below);
-            rt.stops.addAll(above);
+            rt.direction = Direction.DOWN;
+            stopSet.stream().filter(f -> f < lift.getCurrentFloor()).sorted(Comparator.reverseOrder()).forEach(rt.stops::add);
+            stopSet.stream().filter(f -> f > lift.getCurrentFloor()).sorted().forEach(rt.stops::add);
         }
 
-        // Mark all trips IN_PROGRESS
         for (LiftTrip t : rt.pendingTrips) {
             if (t.getTripStatus() == LiftTrip.TripStatus.ASSIGNED) {
                 t.setTripStatus(LiftTrip.TripStatus.IN_PROGRESS);
@@ -224,10 +237,7 @@ public class LiftSimulationService {
         lift.setCurrentLoad(rt.pendingTrips.size());
         liftRepo.save(lift);
 
-        // BUG FIX 10: If all stops are empty after removing current floor
-        // (everyone was already on this floor), go IDLE immediately
         if (rt.stops.isEmpty()) {
-            log.info("[LIFT-{}] No stops needed, going IDLE at {}F", lift.getLiftNumber(), lift.getCurrentFloor());
             completeTripsAtFloor(lift, rt, lift.getCurrentFloor());
             lift.setLiftStatus(Lift.LiftStatus.IDLE);
             lift.setActiveTripCount(0);
@@ -236,6 +246,7 @@ public class LiftSimulationService {
             lift.setAssignedBlockEnd(null);
             liftRepo.save(lift);
             rt.phase = Phase.IDLE;
+            rt.direction = Direction.NONE;
             rt.pendingTrips.clear();
             return;
         }
@@ -244,14 +255,14 @@ public class LiftSimulationService {
         moveToNextStop(lift, rt);
     }
 
-    // ── Move to next stop ──────────────────────────────────────
     private void moveToNextStop(Lift lift, LiftRuntime rt) {
         if (rt.stops.isEmpty()) return;
         int nextFloor = rt.stops.iterator().next();
         int distance  = Math.abs(lift.getCurrentFloor() - nextFloor);
-
-        // BUG FIX 5: If distance is 0, arrive immediately
         long travelMs = distance * SECONDS_PER_FLOOR * 1000L;
+
+        if      (nextFloor > lift.getCurrentFloor()) rt.direction = Direction.UP;
+        else if (nextFloor < lift.getCurrentFloor()) rt.direction = Direction.DOWN;
 
         rt.previousFloor = lift.getCurrentFloor();
         rt.targetFloor   = nextFloor;
@@ -259,122 +270,86 @@ public class LiftSimulationService {
         rt.arrivalTime   = rt.departTime + travelMs;
         rt.phase         = Phase.TRAVELING;
 
-        log.info("[LIFT-{}] {}F→{}F dist={} time={}s",
-                lift.getLiftNumber(), lift.getCurrentFloor(), nextFloor,
-                distance, distance * SECONDS_PER_FLOOR);
+        log.info("[LIFT-{}] Moving {}F→{}F dist={} dir={}", lift.getLiftNumber(),
+                lift.getCurrentFloor(), nextFloor, distance, rt.direction);
     }
 
-    // ── Complete trips whose toFloor == floor ─────────────────
     private void completeTripsAtFloor(Lift lift, LiftRuntime rt, int floor) {
         LocalDateTime now = LocalDateTime.now();
-        // BUG FIX 11: Use new ArrayList to avoid ConcurrentModificationException
-        List<LiftTrip> toComplete = new ArrayList<>(rt.pendingTrips.stream()
-                .filter(t -> t.getToFloor() == floor
-                          && t.getTripStatus() == LiftTrip.TripStatus.IN_PROGRESS)
+        List<LiftTrip> done = new ArrayList<>(rt.pendingTrips.stream()
+                .filter(t -> t.getToFloor() == floor && t.getTripStatus() == LiftTrip.TripStatus.IN_PROGRESS)
                 .toList());
-
-        for (LiftTrip t : toComplete) {
+        for (LiftTrip t : done) {
             t.setTripStatus(LiftTrip.TripStatus.COMPLETED);
             t.setCompletedAt(now);
-            // BUG FIX 12: Calculate travel seconds properly
-            if (t.getAssignedAt() != null) {
+            if (t.getAssignedAt() != null)
                 t.setTravelSeconds((int) java.time.Duration.between(t.getAssignedAt(), now).getSeconds());
-            }
             tripRepo.save(t);
             rt.pendingTrips.remove(t);
             liftRepo.decrementTripCount(DEFAULT_BUILDING_ID, lift.getLiftNumber());
             liftRepo.incrementTotalTrips(DEFAULT_BUILDING_ID, lift.getLiftNumber());
-            log.info("[LIFT-{}] Trip #{} COMPLETED at {}F", lift.getLiftNumber(), t.getId(), floor);
+            log.info("[LIFT-{}] COMPLETED trip #{} at {}F", lift.getLiftNumber(), t.getId(), floor);
         }
     }
 
-    // ── Board passengers whose fromFloor == floor ─────────────
     private void boardTripsAtFloor(Lift lift, LiftRuntime rt, int floor) {
-        // BUG FIX 13: Only board ASSIGNED trips, not already IN_PROGRESS ones
         rt.pendingTrips.stream()
-                .filter(t -> t.getFromFloor() == floor
-                          && t.getTripStatus() == LiftTrip.TripStatus.ASSIGNED)
+                .filter(t -> t.getFromFloor() == floor && t.getTripStatus() == LiftTrip.TripStatus.ASSIGNED)
                 .forEach(t -> {
                     t.setTripStatus(LiftTrip.TripStatus.IN_PROGRESS);
                     t.setAssignedAt(LocalDateTime.now());
                     tripRepo.save(t);
-                    log.info("[LIFT-{}] Boarded trip #{} at {}F→{}F",
-                            lift.getLiftNumber(), t.getId(), floor, t.getToFloor());
                 });
     }
 
-    // ── Drain queue when lift goes idle ───────────────────────
     private void drainQueue(Lift lift) {
-        List<LiftQueue> waiting = queueRepo
-                .findByBuildingIdAndQueueStatusOrderByQueuedAtAsc(
-                        DEFAULT_BUILDING_ID, LiftQueue.QueueStatus.WAITING);
+        List<LiftQueue> waiting = queueRepo.findByBuildingIdAndQueueStatusOrderByQueuedAtAsc(
+                DEFAULT_BUILDING_ID, LiftQueue.QueueStatus.WAITING);
         if (waiting.isEmpty()) return;
-
         LiftRuntime rt = runtimes.get(lift.getId());
         if (rt == null) return;
-
         Building b = buildingRepo.findById(DEFAULT_BUILDING_ID).orElse(null);
         if (b == null) return;
 
         for (LiftQueue q : waiting) {
             if (rt.pendingTrips.size() >= lift.getCapacity()) break;
-            // BUG FIX 14: Check queue entry not expired before draining
             if (q.getExpiresAt() != null && LocalDateTime.now().isAfter(q.getExpiresAt())) {
-                q.setQueueStatus(LiftQueue.QueueStatus.EXPIRED);
-                queueRepo.save(q);
-                continue;
+                q.setQueueStatus(LiftQueue.QueueStatus.EXPIRED); queueRepo.save(q); continue;
             }
             LiftTrip t = LiftTrip.builder()
-                    .user(q.getUser()).building(b)
-                    .employeeId(q.getEmployeeId())
-                    .liftNumber(lift.getLiftNumber())
-                    .fromFloor(q.getFromFloor()).toFloor(q.getToFloor())
-                    .tripType(q.getTripType())
-                    .tripStatus(LiftTrip.TripStatus.ASSIGNED)
-                    .requestedAt(q.getQueuedAt())
+                    .user(q.getUser()).building(b).employeeId(q.getEmployeeId())
+                    .liftNumber(lift.getLiftNumber()).fromFloor(q.getFromFloor()).toFloor(q.getToFloor())
+                    .tripType(q.getTripType()).tripStatus(LiftTrip.TripStatus.ASSIGNED).requestedAt(q.getQueuedAt())
                     .build();
             tripRepo.save(t);
             q.setQueueStatus(LiftQueue.QueueStatus.PROCESSING);
             queueRepo.save(q);
             rt.pendingTrips.add(t);
-            log.info("[LIFT-{}] Drained queue entry #{}", lift.getLiftNumber(), q.getId());
+            log.info("[LIFT-{}] Drained queue #{}", lift.getLiftNumber(), q.getId());
         }
-
         if (!rt.pendingTrips.isEmpty()) {
-            lift.setLiftStatus(Lift.LiftStatus.BUSY);
-            liftRepo.save(lift);
+            lift.setLiftStatus(Lift.LiftStatus.BUSY); liftRepo.save(lift);
             rt.phase = Phase.WAITING;
             rt.waitDeadline = System.currentTimeMillis() + (WAIT_SECONDS * 1000L);
-            log.info("[LIFT-{}] Back to WAITING with {} queued trips",
-                    lift.getLiftNumber(), rt.pendingTrips.size());
         }
     }
 
-    // ── Public API for LiftService ─────────────────────────────
-    public String getPhase(Long liftId) {
-        LiftRuntime rt = runtimes.get(liftId);
-        return rt != null ? rt.phase.name() : "IDLE";
-    }
+    public String    getPhase(Long liftId)         { LiftRuntime rt=runtimes.get(liftId); return rt!=null?rt.phase.name():"IDLE"; }
+    public long      getWaitRemaining(Long liftId)  { LiftRuntime rt=runtimes.get(liftId); if(rt==null||rt.phase!=Phase.WAITING)return 0; return Math.max(0,(rt.waitDeadline-System.currentTimeMillis())/1000); }
+    public Direction getDirection(Long liftId)      { LiftRuntime rt=runtimes.get(liftId); return rt!=null?rt.direction:Direction.NONE; }
+    public Map<Long,LiftRuntime> getRuntimes()      { return Collections.unmodifiableMap(runtimes); }
 
-    public long getWaitRemaining(Long liftId) {
-        LiftRuntime rt = runtimes.get(liftId);
-        if (rt == null || rt.phase != Phase.WAITING) return 0;
-        return Math.max(0, (rt.waitDeadline - System.currentTimeMillis()) / 1000);
-    }
-
-    public Map<Long, LiftRuntime> getRuntimes() {
-        return Collections.unmodifiableMap(runtimes);
-    }
-
-    public enum Phase { IDLE, WAITING, TRAVELING, HALTING }
+    public enum Phase     { IDLE, WAITING, TRAVELING, HALTING }
+    public enum Direction { UP, DOWN, NONE }
 
     public static class LiftRuntime {
-        public Phase          phase        = Phase.IDLE;
-        public long           waitDeadline = 0;
-        public long           haltDeadline = 0;
-        public long           departTime   = 0;
-        public long           arrivalTime  = 0;
-        public int            targetFloor  = 1;
+        public Phase          phase         = Phase.IDLE;
+        public Direction      direction     = Direction.NONE;
+        public long           waitDeadline  = 0;
+        public long           haltDeadline  = 0;
+        public long           departTime    = 0;
+        public long           arrivalTime   = 0;
+        public int            targetFloor   = 1;
         public int            previousFloor = 1;
         public List<LiftTrip> pendingTrips  = new ArrayList<>();
         public Set<Integer>   stops         = new LinkedHashSet<>();
