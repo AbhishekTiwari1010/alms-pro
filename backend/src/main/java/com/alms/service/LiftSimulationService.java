@@ -177,7 +177,14 @@ public class LiftSimulationService {
                 tripRepo.save(t);
 
                 if (t.getFromFloor() != lift.getCurrentFloor()) rt.stops.add(t.getFromFloor());
-                if (t.getToFloor()   != lift.getCurrentFloor()) rt.stops.add(t.getToFloor());
+                // BUG FIX: Only add toFloor if it lies ahead in the current direction.
+                // Previously toFloor was added unconditionally, meaning a DOWN-traveling lift
+                // could have an upward destination inserted mid-route, scrambling the stop order.
+                boolean toFloorAheadUp   = rt.direction == Direction.UP   && t.getToFloor() >= lift.getCurrentFloor();
+                boolean toFloorAheadDown = rt.direction == Direction.DOWN && t.getToFloor() <= lift.getCurrentFloor();
+                if ((toFloorAheadUp || toFloorAheadDown) && t.getToFloor() != lift.getCurrentFloor()) {
+                    rt.stops.add(t.getToFloor());
+                }
                 added = true;
 
                 lift.setActiveTripCount(lift.getActiveTripCount() + 1);
@@ -192,14 +199,20 @@ public class LiftSimulationService {
     }
 
     private void reorderStops(Lift lift, LiftRuntime rt) {
+        // BUG FIX: Use rt.targetFloor (the committed destination) as the pivot,
+        // NOT lift.getCurrentFloor() which is an interpolated display value mid-travel.
+        // Using the interpolated floor caused stops behind the real target to be
+        // re-bucketed to the wrong side, producing scrambled sequences like
+        // 28→27→26→35→34→25→30→24 instead of 28→27→26→25→24.
+        int pivot = rt.targetFloor;
         List<Integer> all = new ArrayList<>(rt.stops);
         rt.stops = new LinkedHashSet<>();
         if (rt.direction == Direction.UP) {
-            all.stream().filter(f -> f >= lift.getCurrentFloor()).sorted().forEach(rt.stops::add);
-            all.stream().filter(f -> f <  lift.getCurrentFloor()).sorted(Comparator.reverseOrder()).forEach(rt.stops::add);
+            all.stream().filter(f -> f >= pivot).sorted().forEach(rt.stops::add);
+            all.stream().filter(f -> f <  pivot).sorted(Comparator.reverseOrder()).forEach(rt.stops::add);
         } else {
-            all.stream().filter(f -> f <= lift.getCurrentFloor()).sorted(Comparator.reverseOrder()).forEach(rt.stops::add);
-            all.stream().filter(f -> f >  lift.getCurrentFloor()).sorted().forEach(rt.stops::add);
+            all.stream().filter(f -> f <= pivot).sorted(Comparator.reverseOrder()).forEach(rt.stops::add);
+            all.stream().filter(f -> f >  pivot).sorted().forEach(rt.stops::add);
         }
     }
 
