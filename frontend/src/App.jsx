@@ -231,6 +231,15 @@ tr:hover td{background:var(--bg3)}
 .auth-tab{flex:1;padding:10px;background:transparent;border:none;color:var(--text2);font-family:var(--font-d);font-size:15px;letter-spacing:1px;cursor:pointer;transition:all 0.15s}
 .auth-tab.active{background:var(--blue);color:var(--bg)}
 
+/* ── TEST CREDENTIALS BANNER ── */
+.test-cred-banner{display:flex;align-items:center;justify-content:space-between;gap:10px;background:rgba(76,175,130,0.06);border:1px dashed rgba(76,175,130,0.35);border-radius:var(--r);padding:9px 12px;margin-bottom:16px}
+.test-cred-left{display:flex;align-items:center;gap:9px;min-width:0}
+.test-cred-badge{flex-shrink:0;background:rgba(76,175,130,0.18);color:var(--green);border:1px solid rgba(76,175,130,0.4);font-family:var(--font-m);font-size:9px;letter-spacing:2px;padding:2px 7px;border-radius:2px}
+.test-cred-info{font-family:var(--font-m);font-size:11px;color:var(--green);opacity:0.85;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.test-cred-sep{margin:0 5px;opacity:0.4}
+.test-cred-btn{flex-shrink:0;background:rgba(76,175,130,0.15);border:1px solid rgba(76,175,130,0.4);color:var(--green);font-family:var(--font-m);font-size:11px;letter-spacing:1px;padding:5px 11px;border-radius:var(--r);cursor:pointer;transition:all 0.15s}
+.test-cred-btn:hover{background:rgba(76,175,130,0.28);border-color:var(--green)}
+
 .g2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
 @media(max-width:600px){.g2,.g3{grid-template-columns:1fr}}
@@ -355,6 +364,23 @@ function AuthPage() {
           <button className={`auth-tab ${tab === "login" ? "active" : ""}`} onClick={() => setTab("login")}>Login</button>
           <button className={`auth-tab ${tab === "register" ? "active" : ""}`} onClick={() => setTab("register")}>Register</button>
         </div>
+        {tab === "login" && (
+          <div className="test-cred-banner">
+            <div className="test-cred-left">
+              <span className="test-cred-badge">TEST</span>
+              <div className="test-cred-info">
+                <span>temp@gmail.com</span>
+                <span className="test-cred-sep">·</span>
+                <span>temp@123</span>
+              </div>
+            </div>
+            <button
+              className="test-cred-btn"
+              onClick={() => setF(p => ({ ...p, email: "temp@gmail.com", password: "temp@123" }))}>
+              Use →
+            </button>
+          </div>
+        )}
         <Alert type="err" msg={err} />
         {tab === "register" && (
           <div className="g2">
