@@ -56,17 +56,18 @@ public class LiftAssignmentAlgorithm {
 
         log.info("[ASSIGN] emp={} {}F->{}F block={}-{}", user.getEmployeeId(), fromFloor, toFloor, bs, be);
 
-        // ── STEP 1: SHARE a WAITING lift already on this block ────────────
-        // This is the most important check — if a lift is WAITING (collecting
-        // requests for this block during the 15s window), always add to it first.
-        // A lift request for floor 1-26 means block 21-30.
-        // Any other request for floors 21-30 should go to the SAME waiting lift.
+        // ── STEP 1: SHARE a WAITING lift whose assigned block matches toFloor ──
+        // We query by fromFloor for proximity, but the real match is:
+        // toFloor must land inside the lift's assignedBlock.
+        // fromFloor can be any floor — no restriction on pickup origin.
         List<Lift> busyOnBlock = liftRepo.findBusyLiftsForBlock(buildingId, fromFloor);
         if (!busyOnBlock.isEmpty()) {
             Lift lift = busyOnBlock.get(0);
-            // Check if this lift is still in WAITING phase (accepting new requests)
+            boolean toInLiftBlock = lift.getAssignedBlockStart() != null
+                    && toFloor >= lift.getAssignedBlockStart()
+                    && toFloor <= lift.getAssignedBlockEnd();
             String phase = simulation.getPhase(lift.getId());
-            if ("WAITING".equals(phase) && lift.hasCapacity()) {
+            if (toInLiftBlock && "WAITING".equals(phase) && lift.hasCapacity()) {
                 lift.setActiveTripCount(lift.getActiveTripCount() + 1);
                 lift.setCurrentLoad(lift.getCurrentLoad() + 1);
                 liftRepo.save(lift);
@@ -80,20 +81,35 @@ public class LiftAssignmentAlgorithm {
             }
         }
 
-        // ── STEP 2: LOOK — assign to a TRAVELING lift in same direction ───
-        // If a lift is already traveling toward fromFloor, add request to it
+        // ── STEP 2: LOOK — TRAVELING lift, destination in SAME BLOCK ───────
+        // A lift qualifies for LOOK-pickup ONLY when ALL of these are true:
+        //   a) toFloor is in the lift's assigned block (bs-be)  ← KEY GUARD
+        //      fromFloor can be ANY floor — we don't restrict pickup origin
+        //   b) fromFloor is ahead of the lift in its current direction
+        //      (lift going UP: fromFloor >= currentFloor)
+        //      (lift going DN: fromFloor <= currentFloor)
+        // Example: lift assigned block 4 (31-40) traveling UP from floor 1
+        //   request floor 21 → floor 38: toFloor=38 in block 4 ✅ pickup
+        //   request floor 5  → floor 36: toFloor=36 in block 4 ✅ pickup
+        //   request floor 25 → floor 45: toFloor=45 in block 5 ❌ skip
         List<Lift> busyLifts = liftRepo.findByBuildingIdAndLiftStatus(buildingId, Lift.LiftStatus.BUSY);
         for (Lift lift : busyLifts) {
+            // ── DESTINATION BLOCK GUARD — toFloor must land in lift's assigned block ──
+            if (lift.getAssignedBlockStart() == null) continue;
+            int liftBs = lift.getAssignedBlockStart();
+            int liftBe = lift.getAssignedBlockEnd();
+            boolean toInLiftBlock = toFloor >= liftBs && toFloor <= liftBe;
+            if (!toInLiftBlock) continue;
+
             LiftSimulationService.Direction dir = simulation.getDirection(lift.getId());
             if (!lift.hasCapacity()) continue;
             if (dir == LiftSimulationService.Direction.NONE) continue;
 
+            // fromFloor must be ahead of the lift in its travel direction
             boolean inPathUp   = dir == LiftSimulationService.Direction.UP
-                    && fromFloor >= lift.getCurrentFloor()
-                    && toFloor   >= lift.getCurrentFloor();
+                    && fromFloor >= lift.getCurrentFloor();
             boolean inPathDown = dir == LiftSimulationService.Direction.DOWN
-                    && fromFloor <= lift.getCurrentFloor()
-                    && toFloor   <= lift.getCurrentFloor();
+                    && fromFloor <= lift.getCurrentFloor();
 
             if (inPathUp || inPathDown) {
                 lift.setActiveTripCount(lift.getActiveTripCount() + 1);
@@ -102,10 +118,10 @@ public class LiftAssignmentAlgorithm {
                 LiftTrip trip = recordTrip(user, building, lift.getLiftNumber(),
                         fromFloor, toFloor, tripType, priority, routeName,
                         LiftTrip.TripStatus.ASSIGNED, now);
-                log.info("[LOOK-ASSIGN] Lift {} traveling {} pickup {}F->{}F",
-                        lift.getLiftNumber(), dir, fromFloor, toFloor);
+                log.info("[LOOK-ASSIGN] Lift {} block={}-{} traveling {} pickup {}F->{}F",
+                        lift.getLiftNumber(), liftBs, liftBe, dir, fromFloor, toFloor);
                 return new AssignmentResult(lift.getLiftNumber(), lift.getLiftName(),
-                        Status.ASSIGNED, trip.getId(), null, bs, be, 0);
+                        Status.ASSIGNED, trip.getId(), null, liftBs, liftBe, 0);
             }
         }
 
